@@ -1,4 +1,5 @@
 .idea
 .env
 core-data
+core-logs
 core/config.json
