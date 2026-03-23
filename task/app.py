@@ -27,7 +27,10 @@ class GeneralPurposeAgentApplication(ChatCompletion):
 
     def __init__(self):
         self.tools: list[BaseTool] = []
-        self.memory_store = LongTermMemoryStore(endpoint=DIAL_ENDPOINT)
+        self.memory_store = LongTermMemoryStore(
+            endpoint=DIAL_ENDPOINT,
+            deployment_name="general-purpose-agent"
+        )
 
     async def _get_mcp_tools(self, url: str) -> list[BaseTool]:
         try:

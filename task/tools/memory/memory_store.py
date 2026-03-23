@@ -3,9 +3,11 @@ os.environ['OMP_NUM_THREADS'] = '1'
 
 import json
 from datetime import datetime, UTC, timedelta
+import asyncio
+from functools import partial
 import numpy as np
 import faiss
-from aidial_client import AsyncDial
+from aidial_client import AsyncDial, Dial
 from sentence_transformers import SentenceTransformer
 
 from task.tools.memory._models import Memory, MemoryData, MemoryCollection
@@ -23,30 +25,34 @@ class LongTermMemoryStore:
 
     DEDUP_INTERVAL_HOURS = 24
 
-    def __init__(self, endpoint: str):
+    def __init__(self, endpoint: str, deployment_name: str):
         self.endpoint = endpoint
+        self.deployment_name = deployment_name
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.cache: dict[str, MemoryCollection] = {}
         faiss.omp_set_num_threads(1)
 
-    async def _get_memory_file_path(self, dial_client: AsyncDial) -> str:
+    def _get_memory_file_path(self, dial_client: Dial) -> str:
         """Get the path to the memory file in DIAL bucket."""
-        app_home = await dial_client.bucket.get_appdata()
-        return f"files/{app_home}/__long-memories/data.json"
+        bucket = dial_client.my_bucket()
+        return f"files/{bucket}/appdata/{self.deployment_name}/__long-memories/data.json"
 
     async def _load_memories(self, api_key: str) -> MemoryCollection:
-        dial_client = AsyncDial(
+        dial_client = Dial(
             base_url=self.endpoint,
             api_key=api_key,
-            api_version='2025-01-01-preview'
         )
-        memory_file_path = await self._get_memory_file_path(dial_client)
+        memory_file_path = self._get_memory_file_path(dial_client)
         
         if memory_file_path in self.cache:
             return self.cache[memory_file_path]
         
         try:
-            response = await dial_client.files.download(memory_file_path)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                partial(dial_client.files.download, memory_file_path)
+            )
             content = response.content.decode('utf-8')
             data = json.loads(content)
             collection = MemoryCollection.model_validate(data)
@@ -58,20 +64,24 @@ class LongTermMemoryStore:
 
     async def _save_memories(self, api_key: str, memories: MemoryCollection):
         """Save memories to DIAL bucket and update cache."""
-        dial_client = AsyncDial(
+        dial_client = Dial(
             base_url=self.endpoint,
             api_key=api_key,
-            api_version='2025-01-01-preview'
         )
-        memory_file_path = await self._get_memory_file_path(dial_client)
+        memory_file_path = self._get_memory_file_path(dial_client)
         
         memories.updated_at = datetime.now(UTC)
         
         json_content = memories.model_dump_json(indent=None)
         
-        await dial_client.files.upload(
-            file=json_content.encode('utf-8'),
-            path=memory_file_path
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            partial(
+                dial_client.files.upload,
+                file=json_content.encode('utf-8'),
+                url=memory_file_path
+            )
         )
         
         self.cache[memory_file_path] = memories
@@ -200,15 +210,18 @@ class LongTermMemoryStore:
         Removes the memory file from DIAL bucket and clears the cache
         for the current conversation.
         """
-        dial_client = AsyncDial(
+        dial_client = Dial(
             base_url=self.endpoint,
             api_key=api_key,
-            api_version='2025-01-01-preview'
         )
-        memory_file_path = await self._get_memory_file_path(dial_client)
+        memory_file_path = self._get_memory_file_path(dial_client)
         
         try:
-            await dial_client.files.delete(memory_file_path)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                partial(dial_client.files.delete, memory_file_path)
+            )
         except:
             pass
         
